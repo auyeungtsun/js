@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Away Trajectory Particles</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden; /* Prevent scrollbars */
+            background-color: #000; /* Dark background */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+        canvas {
+            display: block; /* Remove potential space below canvas */
+        }
+    </style>
+</head>
+<body>
+    <canvas id="particleCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('particleCanvas');
+        const ctx = canvas.getContext('2d');
+
+        let particles = [];
+        let canvasWidth = window.innerWidth;
+        let canvasHeight = window.innerHeight;
+        let centerX = canvasWidth / 2;
+        let centerY = canvasHeight / 2;
+
+        // --- Simulation Parameters ---
+        const PARTICLE_COUNT = 30; // Max number of particles
+        const SPAWN_RATE = 2; // Particles to spawn per frame
+        const GRAVITY = 0.05;
+        const INITIAL_VEL_Y_MIN = -5; // Initial upward velocity range
+        const INITIAL_VEL_Y_MAX = -15;
+        const INITIAL_VEL_X_SPREAD = 15; // Horizontal spread
+        const INITIAL_VEL_Z_MIN = 0.5; // Speed moving away
+        const INITIAL_VEL_Z_MAX = 1.5;
+        const INITIAL_SIZE = 30; // Size when close (z=0)
+        const MAX_Z = 500; // How far particles travel before disappearing
+        const FOCAL_LENGTH = 30; // Affects perspective intensity (lower = more intense)
+        const TRAIL_ALPHA = 0.1; // Opacity of the background fill (lower = longer trails)
+        // -----------------------------
+
+        function resizeCanvas() {
+            canvasWidth = window.innerWidth;
+            canvasHeight = window.innerHeight;
+            canvas.width = canvasWidth;
+            canvas.height = canvasHeight;
+            centerX = canvasWidth / 2;
+            centerY = canvasHeight / 2;
+        }
+
+        class Particle {
+            constructor() {
+                // Start near bottom center, slightly spread out
+                this.x = (Math.random() - 0.5) * canvasWidth * 1;
+                this.y = canvasHeight * 0.45 + (Math.random() * canvasHeight * 0.1); // Start slightly above bottom edge
+                this.z = Math.random() * 5; // Start very close
+
+                this.vx = (Math.random() - 0.5) * INITIAL_VEL_X_SPREAD;
+                this.vy = INITIAL_VEL_Y_MIN + Math.random() * (INITIAL_VEL_Y_MAX - INITIAL_VEL_Y_MIN);
+                this.vz = INITIAL_VEL_Z_MIN + Math.random() * (INITIAL_VEL_Z_MAX - INITIAL_VEL_Z_MIN);
+
+                this.initialSize = INITIAL_SIZE * (0.5 + Math.random() * 0.5); // Vary initial sizes
+                this.color = `hsl(${Math.random() * 360}, 80%, 60%)`; // Vibrant random color
+            }
+
+            update() {
+                // Apply gravity
+                this.vy += GRAVITY;
+
+                // Update position
+                this.x += this.vx;
+                this.y += this.vy;
+                this.z += this.vz;
+
+                // Perspective projection
+                const scale = FOCAL_LENGTH / (FOCAL_LENGTH + this.z);
+
+                if (scale <= 0 || this.z > MAX_Z) {
+                    // Reset particle if it's too far or behind viewer
+                    return false; // Signal to remove/reset
+                }
+
+                this.screenX = this.x * scale + centerX;
+                this.screenY = this.y * scale + centerY;
+                this.screenSize = this.initialSize * scale;
+
+                // Basic boundary check (optional, could let them fall off)
+                // if(this.screenY > canvasHeight + this.screenSize) return false;
+
+                return true; // Still active
+            }
+
+            draw() {
+                if (this.screenSize <= 0.1) return; // Don't draw if too small
+
+                ctx.beginPath();
+                ctx.arc(this.screenX, this.screenY, this.screenSize, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+            }
+        }
+
+        function spawnParticles() {
+            for (let i = 0; i < SPAWN_RATE; i++) {
+                if (particles.length < PARTICLE_COUNT) {
+                    particles.push(new Particle());
+                } else {
+                    // Optional: If max count reached, find an inactive particle to recycle
+                    // For simplicity here, we just stop spawning more than PARTICLE_COUNT
+                    break;
+                }
+            }
+        }
+
+        function animate() {
+            // Create trails by filling with a semi-transparent background
+            ctx.fillStyle = `rgba(0, 0, 0, ${TRAIL_ALPHA})`;
+            ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+
+            spawnParticles();
+
+            // Update and draw particles
+            // Loop backwards for safe removal/recycling
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const particle = particles[i];
+                const isActive = particle.update();
+
+                if (isActive) {
+                    particle.draw();
+                } else {
+                    // Remove particle if it's inactive (e.g., too far away)
+                    particles.splice(i, 1);
+                }
+            }
+
+            requestAnimationFrame(animate);
+        }
+
+        // Initialization
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas(); // Initial size setup
+        animate();      // Start the simulation
+    </script>
+</body>
+</html>
