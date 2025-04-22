@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ballistic Particle Simulation</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #111; }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+    <canvas id="particleCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('particleCanvas');
+        const ctx = canvas.getContext('2d');
+
+        let width = canvas.width = window.innerWidth;
+        let height = canvas.height = window.innerHeight;
+
+        // --- Simulation Parameters ---
+        const PARTICLE_COUNT = 100;
+        const MAX_INITIAL_Z = 10000; // How far away particles start
+        const PARTICLE_BASE_RADIUS = 50;
+        const GRAVITY = 0.2;
+        const GROUND_Y_3D = -1000; // Y coordinate of the ground in 3D space (Y=0 is horizon level)
+        const ELASTICITY = 1.0; // 1.0 for perfect bounce
+        const NEAR_CLIP_Z = 1; // Z distance where particles are removed/reset
+
+        // --- Perspective & View ---
+        let vpX = width / 2;
+        let vpY = height * 0.10; // Vanishing point: 10% height from top, center
+        let focalLength = vpY * 1.5; // Affects field of view / perspective intensity
+        let viewerAngle = 0; // Current viewing angle (radians)
+        const maxViewerAngle = Math.PI / 4.5; // Max rotation left/right
+        const rotationSpeedFactor = 0.0005; // Controls speed of automatic rotation
+
+        let particles = [];
+
+        // --- Particle Class ---
+        class Particle {
+            constructor() {
+                this.reset();
+            }
+
+            reset() {
+                // Start far away
+                this.z = Math.random() * MAX_INITIAL_Z * 0.8 + MAX_INITIAL_Z * 0.2;
+
+                // Spread them out horizontally initially, scaled by distance
+                const spread = 400 * (1 - this.z / MAX_INITIAL_Z);
+                this.x = (Math.random() - 0.5) * spread;
+
+                // Start near the ground or slightly above
+                this.y = GROUND_Y_3D + Math.random() * 200 + 200;
+
+                // Initial velocity
+                const angleXY = Math.random() * Math.PI * 2;
+                const horizontalSpeed = Math.random() * 1 + 0.5;
+                this.vx = Math.cos(angleXY) * horizontalSpeed * 0.2; // Less X velocity initially
+                this.vy = Math.random() * 4 + 4; // Initial upward velocity
+                this.vz = -(Math.random() * 3 + 5); // Moving towards the viewer (negative Z)
+
+                this.color = `hsl(${Math.random() * 360}, 100%, 70%)`; // Vibrant colors
+                this.radius = PARTICLE_BASE_RADIUS;
+
+                // Screen coordinates (calculated during projection)
+                this.screenX = 0;
+                this.screenY = 0;
+                this.scale = 0;
+            }
+
+            update() {
+                // Apply gravity
+                this.vy -= GRAVITY;
+
+                // Update position
+                this.x += this.vx;
+                this.y += this.vy;
+                this.z += this.vz;
+
+                // Ground bounce check
+                if (this.y <= GROUND_Y_3D) {
+                    this.y = GROUND_Y_3D; // Prevent sinking
+                    this.vy *= -ELASTICITY;
+
+                    // Dampen horizontal velocity slightly on bounce (optional, for realism)
+                    // this.vx *= 0.95;
+                    // this.vz *= 0.98; // Slow down forward momentum slightly
+                }
+
+                // Check if particle is behind the viewer or too far up/down
+                 if (this.z <= NEAR_CLIP_Z || this.y > height * 2 ) { // Reset if behind viewer or way off screen
+                    this.reset();
+                }
+            }
+
+            project(currentViewerAngle) {
+                // 1. Rotate around Y axis based on viewer angle
+                const cosA = Math.cos(currentViewerAngle);
+                const sinA = Math.sin(currentViewerAngle);
+
+                const rotatedX = this.x * cosA - this.z * sinA;
+                const rotatedZ = this.x * sinA + this.z * cosA;
+
+                // Store rotated Z for depth sorting AFTER rotation
+                this.rotatedZ = rotatedZ;
+
+                // 2. Perspective Projection
+                if (rotatedZ <= 0) { // Avoid division by zero/negative Z after rotation
+                     this.scale = 0; // Effectively invisible if behind rotated view plane
+                     return;
+                }
+
+                this.scale = focalLength / (focalLength + rotatedZ);
+                // In canvas, Y=0 is top, so we subtract the projected Y from vpY
+                // Simulation Y is up, Canvas Y is down.
+                this.screenX = vpX + rotatedX * this.scale;
+                this.screenY = vpY - this.y * this.scale; // Subtract because canvas Y is inverted relative to common 3D Y up
+            }
+
+            draw(ctx) {
+                // Only draw if scale is positive (in front of view plane after rotation)
+                // and reasonably on screen (optimization)
+                if (this.scale > 0 &&
+                    this.screenX > -this.radius * this.scale && this.screenX < width + this.radius * this.scale &&
+                    this.screenY > -this.radius * this.scale && this.screenY < height + this.radius * this.scale)
+                {
+                    ctx.beginPath();
+                    ctx.arc(this.screenX, this.screenY, this.radius * this.scale, 0, Math.PI * 2);
+                    ctx.fillStyle = this.color;
+                    ctx.fill();
+                }
+            }
+        }
+
+        // --- Initialization ---
+        function init() {
+            width = canvas.width = window.innerWidth;
+            height = canvas.height = window.innerHeight;
+            vpX = width / 2;
+            vpY = height * 0.10;
+             focalLength = vpY * 1.5; // Readjust focal length based on vpY
+
+            particles = [];
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                particles.push(new Particle());
+            }
+        }
+
+        // --- Animation Loop ---
+        function animate() {
+            // Update viewer angle (oscillates left/right, faster in center)
+            viewerAngle = maxViewerAngle * Math.sin(Date.now() * rotationSpeedFactor);
+
+            // Clear canvas
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.2)'; // Slightly transparent black for trails effect
+            ctx.fillRect(0, 0, width, height);
+            //ctx.clearRect(0, 0, width, height); // Use this for no trails
+
+            // Update and project particles
+            particles.forEach(p => {
+                p.update();
+                p.project(viewerAngle); // Project based on *current* view angle
+            });
+
+            // Depth Sort (Painter's Algorithm): Furthest first
+            // Sort based on the Z coordinate *after* view rotation
+            particles.sort((a, b) => b.rotatedZ - a.rotatedZ);
+
+            // Draw sorted particles
+            particles.forEach(p => {
+                p.draw(ctx);
+            });
+
+
+            requestAnimationFrame(animate);
+        }
+
+        // --- Event Listeners ---
+        window.addEventListener('resize', init);
+
+        // --- Start ---
+        init();
+        animate();
+
+    </script>
+</body>
+</html>
