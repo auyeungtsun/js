@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Three.js Pendulum Wave</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #111; }
+        canvas { display: block; }
+        #info {
+            position: absolute;
+            top: 10px;
+            width: 100%;
+            text-align: center;
+            color: #fff;
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+            z-index: 100;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">Three.js Pendulum Wave Simulation<br>Drag to rotate, scroll to zoom, right-click drag to pan.</div>
+
+    <!-- Import Map for Three.js Modules -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        let scene, camera, renderer, clock, controls;
+        const pendulums = [];
+
+        // --- Configuration ---
+        const numPendulums = 20;
+        const pendulumSpacing = 0.4; // Distance between pendulum pivots
+        const maxAngle = Math.PI / 6; // Maximum swing angle (radians)
+        const pivotY = 5; // Height of the pivot point
+        const maxLen = 4.5; // Visual length of the longest pendulum (index 0)
+        const bobRadius = 0.15;
+
+        // Physics constants for the wave effect
+        const T_cycle = 60.0; // Time in seconds for the whole pattern to repeat
+        const N0 = 50; // Number of oscillations of the longest pendulum in T_cycle
+
+        function init() {
+            // Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x111111);
+
+            // Clock
+            clock = new THREE.Clock();
+
+            // Camera
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, pivotY / 2, 10); // Position camera to view the pendulums
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            // Lights
+            const ambientLight = new THREE.AmbientLight(0x404040, 1.5); // Soft white light
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1.5);
+            directionalLight.position.set(5, 10, 7.5);
+            scene.add(directionalLight);
+
+            // Controls
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.target.set(0, pivotY / 2, 0); // Point controls towards the center of action
+            controls.enableDamping = true; // Optional damping for smoother interaction
+            controls.dampingFactor = 0.05;
+
+            // Create Pendulums
+            createPendulums();
+            createSupportBar(); // Optional visual bar
+
+            // Event Listeners
+            window.addEventListener('resize', onWindowResize, false);
+
+            // Start Animation Loop
+            animate();
+        }
+
+        function createSupportBar() {
+            const totalWidth = (numPendulums -1) * pendulumSpacing * 1.1; // Slightly wider than pendulums
+            const barGeo = new THREE.BoxGeometry(totalWidth, 0.1, 0.1);
+            const barMat = new THREE.MeshStandardMaterial({ color: 0x888888 });
+            const barMesh = new THREE.Mesh(barGeo, barMat);
+            barMesh.position.set(0, pivotY, 0);
+            scene.add(barMesh);
+        }
+
+        function createPendulums() {
+            const bobGeometry = new THREE.SphereGeometry(bobRadius, 16, 16);
+            const stringMaterial = new THREE.LineBasicMaterial({ color: 0xcccccc });
+
+            const startX = - (numPendulums - 1) * pendulumSpacing / 2;
+
+            for (let i = 0; i < numPendulums; i++) {
+                // Calculate frequency and length for pendulum wave effect
+                const Ni = N0 + i;
+                const omega = (2 * Math.PI * Ni) / T_cycle;
+
+                // Calculate visual length - shorter pendulums have higher frequency (omega)
+                // L is proportional to 1/omega^2. Scale relative to the longest (i=0).
+                const omega0 = (2 * Math.PI * N0) / T_cycle;
+                const length = maxLen * Math.pow(omega0 / omega, 2);
+                // Clamp length to avoid extremely short ones if parameters are weird
+                const visualLength = Math.max(length, bobRadius * 2);
+
+                const pivotX = startX + i * pendulumSpacing;
+                const pivotPos = new THREE.Vector3(pivotX, pivotY, 0);
+
+                // Create Bob
+                // Use HSL color space for a nice gradient
+                const bobMaterial = new THREE.MeshStandardMaterial({
+                    color: new THREE.Color().setHSL(i / numPendulums, 0.8, 0.6),
+                    metalness: 0.3,
+                    roughness: 0.4
+                });
+                const bob = new THREE.Mesh(bobGeometry, bobMaterial);
+
+                // Create String (Line)
+                const stringPoints = [];
+                stringPoints.push(pivotPos); // Pivot point
+                stringPoints.push(new THREE.Vector3(pivotX, pivotY - visualLength, 0)); // Initial bob position (at rest)
+                const stringGeometry = new THREE.BufferGeometry().setFromPoints(stringPoints);
+                const stringLine = new THREE.LineSegments(stringGeometry, stringMaterial); // Use LineSegments
+
+                // Store pendulum data
+                const pendulum = {
+                    bob: bob,
+                    string: stringLine,
+                    pivot: pivotPos,
+                    length: visualLength,
+                    omega: omega, // Angular frequency
+                    initialAngle: maxAngle // Store initial angle if needed later
+                };
+                pendulums.push(pendulum);
+
+                // Add to scene
+                scene.add(bob);
+                scene.add(stringLine);
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const elapsedTime = clock.getElapsedTime();
+
+            // Update each pendulum
+            pendulums.forEach(p => {
+                // Calculate current angle using simple harmonic motion formula
+                const angle = maxAngle * Math.cos(p.omega * elapsedTime);
+
+                // Calculate bob's current position
+                 const bobX = p.pivot.x;
+                 const bobY = p.pivot.y - p.length * Math.cos(angle);
+                 const bobZ = p.pivot.z + p.length * Math.sin(angle);
+
+
+                p.bob.position.set(bobX, bobY, bobZ);
+
+                // Update string geometry
+                const positionAttribute = p.string.geometry.getAttribute('position');
+                // First vertex is the pivot (doesn't change if pivot is static)
+                // positionAttribute.setXYZ(0, p.pivot.x, p.pivot.y, p.pivot.z); // Only needed if pivot moves
+                // Second vertex is the bob's current position
+                positionAttribute.setXYZ(1, bobX, bobY, bobZ);
+                positionAttribute.needsUpdate = true; // Crucial: tell three.js the geometry changed
+            });
+
+            controls.update(); // Update controls if damping is enabled
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- Start ---
+        init();
+
+    </script>
+</body>
+</html>
