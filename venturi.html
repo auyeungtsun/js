@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Venturi Effect Simulation - Three.js</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #111; }
+        canvas { display: block; }
+        #info {
+            position: absolute;
+            top: 10px;
+            width: 100%;
+            text-align: center;
+            color: #f0f0f0;
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">Venturi Effect Simulation<br>Particles speed up and pressure (indicated by tube height) drops in the narrow section.</div>
+
+    <!-- Import maps polyfill -->
+    <!-- Remove this when import maps will be widely supported -->
+    <script async src="https://unpkg.com/es-module-shims@1.6.3/dist/es-module-shims.js"></script>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.157.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.157.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        let scene, camera, renderer, controls;
+        let particles, particleSystem;
+        let tubeGroup, manometersGroup;
+        const clock = new THREE.Clock();
+
+        // --- Configuration ---
+        const particleCount = 1500;
+        const tubeColor = 0xaaaaee;
+        const particleColor = 0xffffff;
+        const manometerColor = 0x0077ff;
+
+        // Tube Dimensions
+        const inletRadius = 1.5;
+        const throatRadius = 0.5;
+        const outletRadius = 1.5;
+        const sectionLength = 5; // Length of inlet, throat, outlet sections
+        const transitionLength = 2; // Length of the tapering sections
+        const totalLength = sectionLength * 3 + transitionLength * 2;
+        const tubeSegments = 32; // Radial segments for cylinders
+
+        // Flow speeds (relative)
+        const inletSpeed = 5;
+        const throatSpeed = inletSpeed * (inletRadius / throatRadius)**2; // Conservation of mass (A1*V1 = A2*V2 -> V2 = V1 * A1/A2 = V1 * (r1/r2)^2)
+        const outletSpeed = inletSpeed; // Assuming outlet radius = inlet radius
+
+        // Manometer heights (base height and pressure drop factor)
+        const baseManometerHeight = 4;
+        const pressureFactor = 0.05; // Adjust this to change pressure visualization sensitivity
+
+        // Particle data storage
+        const particleData = [];
+
+        init();
+        animate();
+
+        function init() {
+            // --- Scene ---
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x111);
+
+            // --- Camera ---
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 5, 25); // Adjusted for better view
+
+            // --- Renderer ---
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            // --- Controls ---
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true; // an animation loop is required when either damping or auto-rotation are enabled
+            controls.dampingFactor = 0.05;
+            controls.autoRotate = true;
+            controls.screenSpacePanning = false;
+            controls.minDistance = 5;
+            controls.maxDistance = 50;
+            controls.maxPolarAngle = Math.PI / 2;
+
+            // --- Lighting ---
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(5, 10, 7.5);
+            scene.add(directionalLight);
+
+            // --- Create Venturi Tube ---
+            createVenturiTube();
+
+            // --- Create Particles ---
+            createParticles();
+
+            // --- Create Manometers ---
+            createManometers();
+
+            // --- Event Listeners ---
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function createVenturiTube() {
+            tubeGroup = new THREE.Group();
+            const tubeMaterial = new THREE.MeshStandardMaterial({
+                color: tubeColor,
+                transparent: true,
+                opacity: 0.4,
+                side: THREE.DoubleSide, // See inside
+                depthWrite: false // Prevent transparent tube from blocking particles behind it
+            });
+
+            let currentZ = -totalLength / 2;
+
+            // Inlet Section (Cylinder)
+            const inletGeo = new THREE.CylinderGeometry(inletRadius, inletRadius, sectionLength, tubeSegments, 1, true);
+            const inletMesh = new THREE.Mesh(inletGeo, tubeMaterial);
+            inletMesh.position.z = currentZ + sectionLength / 2;
+            inletMesh.rotation.x = Math.PI / 2; // Align along Z
+            tubeGroup.add(inletMesh);
+            currentZ += sectionLength;
+
+            // Transition 1 (Cone/Cylinder)
+            const trans1Geo = new THREE.CylinderGeometry(throatRadius, inletRadius, transitionLength, tubeSegments, 1, true);
+            const trans1Mesh = new THREE.Mesh(trans1Geo, tubeMaterial);
+            trans1Mesh.position.z = currentZ + transitionLength / 2;
+            trans1Mesh.rotation.x = Math.PI / 2;
+            tubeGroup.add(trans1Mesh);
+            currentZ += transitionLength;
+
+            // Throat Section (Cylinder)
+            const throatGeo = new THREE.CylinderGeometry(throatRadius, throatRadius, sectionLength, tubeSegments, 1, true);
+            const throatMesh = new THREE.Mesh(throatGeo, tubeMaterial);
+            throatMesh.position.z = currentZ + sectionLength / 2;
+            throatMesh.rotation.x = Math.PI / 2;
+            tubeGroup.add(throatMesh);
+            currentZ += sectionLength;
+
+            // Transition 2 (Cone/Cylinder)
+            const trans2Geo = new THREE.CylinderGeometry(inletRadius, throatRadius, transitionLength, tubeSegments, 1, true);
+            const trans2Mesh = new THREE.Mesh(trans2Geo, tubeMaterial);
+            trans2Mesh.position.z = currentZ + transitionLength / 2;
+            trans2Mesh.rotation.x = Math.PI / 2;
+            tubeGroup.add(trans2Mesh);
+            currentZ += transitionLength;
+
+            // Outlet Section (Cylinder)
+            const outletGeo = new THREE.CylinderGeometry(outletRadius, outletRadius, sectionLength, tubeSegments, 1, true);
+            const outletMesh = new THREE.Mesh(outletGeo, tubeMaterial);
+            outletMesh.position.z = currentZ + sectionLength / 2;
+            outletMesh.rotation.x = Math.PI / 2;
+            tubeGroup.add(outletMesh);
+
+            scene.add(tubeGroup);
+        }
+
+        function createParticles() {
+            const particleGeometry = new THREE.BufferGeometry();
+            const positions = new Float32Array(particleCount * 3);
+            const startZ = -totalLength / 2 - 1; // Start slightly before the tube inlet
+
+            for (let i = 0; i < particleCount; i++) {
+                const i3 = i * 3;
+
+                // Initial position randomization
+                const z = startZ + Math.random() * (totalLength + 2); // Spread initially
+                const radius = getRadiusAtZ(z) * Math.sqrt(Math.random()); // Distribute more evenly in circle
+                const angle = Math.random() * Math.PI * 2;
+                const x = radius * Math.cos(angle);
+                const y = radius * Math.sin(angle);
+
+                positions[i3 + 0] = x;
+                positions[i3 + 1] = y;
+                positions[i3 + 2] = z;
+
+                // Store initial data for animation
+                particleData.push({
+                    velocity: new THREE.Vector3(0, 0, getSpeedAtZ(z)),
+                    initialZ: z, // Can be used for variations, not strictly needed here
+                    prevZ: z // Store initial Z for radius scaling
+                });
+            }
+
+            particleGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+            const particleMaterial = new THREE.PointsMaterial({
+                color: particleColor,
+                size: 0.1,
+                transparent: true,
+                opacity: 0.8,
+                sizeAttenuation: true, // Points smaller further away
+            });
+
+            particleSystem = new THREE.Points(particleGeometry, particleMaterial);
+            scene.add(particleSystem);
+        }
+
+        function createManometers() {
+            manometersGroup = new THREE.Group();
+            const manometerMaterial = new THREE.MeshStandardMaterial({
+                color: manometerColor,
+                transparent: true,
+                opacity: 0.7
+            });
+            const manometerRadius = 0.2;
+
+            // Positions along the tube for manometers
+            const positionsZ = [
+                -totalLength / 2 + sectionLength / 2, // Inlet center
+                0,                                     // Throat center
+                totalLength / 2 - sectionLength / 2   // Outlet center
+            ];
+
+            positionsZ.forEach((zPos, index) => {
+                const speed = getSpeedAtZ(zPos);
+                // Bernoulli approximation: Pressure ~ Base - k * v^2
+                // Higher speed -> lower pressure -> lower height
+                const height = Math.max(0.1, baseManometerHeight - pressureFactor * speed * speed);
+
+                const manometerGeo = new THREE.CylinderGeometry(manometerRadius, manometerRadius, height, 16);
+                const manometerMesh = new THREE.Mesh(manometerGeo, manometerMaterial);
+
+                // Find the tube radius at this z position to place manometer on top
+                const tubeRadiusAtZ = getRadiusAtZ(zPos);
+
+                // Position manometer on top of the tube wall
+                manometerMesh.position.set(0, tubeRadiusAtZ + height / 2, zPos); // y = tube top + half height
+                manometerMesh.name = `manometer_${index}`; // For potential later updates
+
+                manometersGroup.add(manometerMesh);
+            });
+
+            scene.add(manometersGroup);
+        }
+
+        // Helper function to get the tube radius at a given Z position
+        function getRadiusAtZ(z) {
+            const halfLength = totalLength / 2;
+            const inletEnd = -halfLength + sectionLength;
+            const trans1End = inletEnd + transitionLength;
+            const throatEnd = trans1End + sectionLength;
+            const trans2End = throatEnd + transitionLength;
+            //const outletEnd = trans2End + sectionLength; // == halfLength
+
+            if (z < inletEnd) {
+                return inletRadius;
+            } else if (z < trans1End) {
+                const t = (z - inletEnd) / transitionLength; // interpolation factor 0 to 1
+                return inletRadius + (throatRadius - inletRadius) * t; // Linear interpolation
+            } else if (z < throatEnd) {
+                return throatRadius;
+            } else if (z < trans2End) {
+                const t = (z - throatEnd) / transitionLength; // interpolation factor 0 to 1
+                return throatRadius + (outletRadius - throatRadius) * t; // Linear interpolation
+            } else {
+                return outletRadius;
+            }
+        }
+
+         // Helper function to get the target speed at a given Z position
+        function getSpeedAtZ(z) {
+            const halfLength = totalLength / 2;
+            const inletEnd = -halfLength + sectionLength;
+            const trans1End = inletEnd + transitionLength;
+            const throatEnd = trans1End + sectionLength;
+            const trans2End = throatEnd + transitionLength;
+
+             // Simple sharp transitions for speed for demo clarity
+            if (z < inletEnd) {
+                return inletSpeed;
+            } else if (z < trans1End) {
+                 const t = (z - inletEnd) / transitionLength;
+                 return inletSpeed + (throatSpeed - inletSpeed) * t; // Smooth speed transition
+            } else if (z < throatEnd) {
+                return throatSpeed;
+            } else if (z < trans2End) {
+                const t = (z - throatEnd) / transitionLength;
+                 return throatSpeed + (outletSpeed - throatSpeed) * t; // Smooth speed transition
+            } else {
+                return outletSpeed;
+            }
+        }
+
+        function updateParticles(deltaTime) {
+            const positions = particleSystem.geometry.attributes.position.array;
+            const halfLength = totalLength / 2;
+            const respawnZ = -halfLength - 1; // Respawn before inlet
+
+            for (let i = 0; i < particleCount; i++) {
+                const i3 = i * 3;
+                let z = positions[i3 + 2];
+
+                // Determine current speed based on Z
+                const currentSpeed = getSpeedAtZ(z);
+                particleData[i].velocity.z = currentSpeed; // Update velocity
+
+                // Update position along Z-axis
+                z += particleData[i].velocity.z * deltaTime;
+
+                // Boundary check: Loop particles
+                if (z > halfLength + 1) { // If particle passed the outlet
+                    z = respawnZ + (Math.random() - 0.5); // Reset Z to start before inlet
+                }
+
+                // Keep particles within the tube radius at their current Z
+                const currentRadius = getRadiusAtZ(z);
+
+                // Calculate scale based on change in radius since last update
+                const prevRadius = getRadiusAtZ(particleData[i].prevZ);
+                let scale = 1; // Default scale
+                if (prevRadius !== 0) { // Avoid division by zero
+                    scale = currentRadius / prevRadius;
+                }
+
+                // Apply scaling to x/y positions
+                const x = positions[i3 + 0];
+                const y = positions[i3 + 1];
+                const distSq = x*x + y*y;
+                positions[i3 + 0] *= scale;
+                positions[i3 + 1] *= scale;
+                positions[i3 + 2] = z;
+                particleData[i].prevZ = z; // Update previous Z position
+            }
+
+            particleSystem.geometry.attributes.position.needsUpdate = true; // IMPORTANT!
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const deltaTime = clock.getDelta();
+
+            controls.update(); // only required if controls.enableDamping = true, or if controls.autoRotate = true
+
+            updateParticles(deltaTime);
+            // Manometers are static in this simple version, but could be updated here if needed
+
+            renderer.render(scene, camera);
+        }
+
+    </script>
+</body>
+</html>
